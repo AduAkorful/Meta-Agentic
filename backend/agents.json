@@ -1,0 +1,32 @@
+[
+  {
+    "id": 1,
+    "name": "Writing Assistant",
+    "purpose": "Help users write and edit content",
+    "model": "nebius-text-medium",
+    "configuration": {
+      "max_tokens": 300,
+      "temperature": 0.7
+    }
+  },
+  {
+    "id": 2,
+    "name": "Code Helper",
+    "purpose": "Assist with programming tasks",
+    "model": "nebius-code-medium",
+    "configuration": {
+      "max_tokens": 500,
+      "temperature": 0.4
+    }
+  },
+  {
+    "id": 3,
+    "name": "Research Assistant",
+    "purpose": "Help with data analysis and research",
+    "model": "nebius-text-large",
+    "configuration": {
+      "max_tokens": 800,
+      "temperature": 0.5
+    }
+  }
+]
