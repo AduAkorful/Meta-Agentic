@@ -1,5 +1,7 @@
-fastapi 
-uvicorn 
-sqlalchemy 
-pydantic 
-httpx 
+fastapi>=0.95.0
+uvicorn>=0.22.0
+sqlalchemy>=2.0.0
+pydantic>=2.0.0
+httpx>=0.24.0
+modal>=0.50.0
+pytest>=7.3.1
