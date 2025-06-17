@@ -1,10 +1,13 @@
 import os
-import sqlite3
-import pathlib
 import modal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
+import json
+from typing import Dict, Any, Optional
+
+# Import from database module
+from database import Agent, init_db, insert_agent, get_agent, list_agents, update_agent, delete_agent
 
 # Modal app and image setup
 app = modal.App(
@@ -14,71 +17,22 @@ app = modal.App(
 
 fastapi_app = FastAPI()
 
-# SQLite DB file path inside container
-AGENT_DB_FILE = "/root/meta_agentic_agents.db"
-
-# Agent model
-class Agent(BaseModel):
+# Enhanced Agent model for requests
+class AgentRequest(BaseModel):
     id: int
     name: str
     purpose: str
     model: str = "default"
+    configuration: Dict[str, Any] = {}
 
-# Initialize SQLite DB and create table if not exists
-def init_db():
-    db_path = pathlib.Path(AGENT_DB_FILE)
-    if not db_path.parent.exists():
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(AGENT_DB_FILE) as conn:
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS agents (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            purpose TEXT NOT NULL,
-            model TEXT DEFAULT 'default'
-        )
-        """)
-        conn.commit()
+# Response model
+class AgentResponse(Agent):
+    pass
 
-# Insert agent into DB
-def insert_agent(agent: Agent):
-    with sqlite3.connect(AGENT_DB_FILE) as conn:
-        conn.execute(
-            "INSERT INTO agents (id, name, purpose, model) VALUES (?, ?, ?, ?)",
-            (agent.id, agent.name, agent.purpose, agent.model)
-        )
-        conn.commit()
-
-# Get agent from DB by id
-def get_agent(agent_id: int):
-    with sqlite3.connect(AGENT_DB_FILE) as conn:
-        cur = conn.execute("SELECT id, name, purpose, model FROM agents WHERE id = ?", (agent_id,))
-        row = cur.fetchone()
-        if row:
-            return Agent(id=row[0], name=row[1], purpose=row[2], model=row[3])
-        return None
-
-# Get all agents
-def list_agents():
-    with sqlite3.connect(AGENT_DB_FILE) as conn:
-        cur = conn.execute("SELECT id, name, purpose, model FROM agents")
-        rows = cur.fetchall()
-        return [Agent(id=row[0], name=row[1], purpose=row[2], model=row[3]) for row in rows]
-
-# Update existing agent
-def update_agent(agent: Agent):
-    with sqlite3.connect(AGENT_DB_FILE) as conn:
-        conn.execute(
-            "UPDATE agents SET name = ?, purpose = ?, model = ? WHERE id = ?",
-            (agent.name, agent.purpose, agent.model, agent.id)
-        )
-        conn.commit()
-
-# Delete agent by id
-def delete_agent(agent_id: int):
-    with sqlite3.connect(AGENT_DB_FILE) as conn:
-        conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
-        conn.commit()
+# Enhanced prompt request model
+class PromptRequest(BaseModel):
+    prompt: str
+    parameters: Optional[Dict[str, Any]] = None
 
 # Nebius API helpers
 def get_nebius_headers(api_key: str):
@@ -87,47 +41,76 @@ def get_nebius_headers(api_key: str):
         "Content-Type": "application/json"
     }
 
-async def call_nebius_model(api_key: str, model_name: str, prompt: str):
+async def call_nebius_model(api_key: str, model_name: str, prompt: str, parameters: Dict[str, Any] = None):
     url = f"https://api.nebius.com/v1/models/{model_name}/completions"
     payload = {
         "prompt": prompt,
-        "max_tokens": 150
+        "max_tokens": parameters.get("max_tokens", 150) if parameters else 150,
+        "temperature": parameters.get("temperature", 0.7) if parameters else 0.7
     }
+    
     async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=get_nebius_headers(api_key), json=payload)
-        response.raise_for_status()
-        result = response.json()
-        return result.get("choices", [{}])[0].get("text", "")
+        try:
+            response = await client.post(url, headers=get_nebius_headers(api_key), json=payload)
+            response.raise_for_status()
+            result = response.json()
+            return result.get("choices", [{}])[0].get("text", "")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Nebius API error: {e.response.text}")
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
 
 # FastAPI routes
 @fastapi_app.get("/")
 def root():
-    return {"message": "Welcome to Meta-Agentic Backend"}
+    return {"message": "Welcome to Meta-Agentic Backend", "status": "operational"}
 
-@fastapi_app.post("/agents/")
-def create_agent(agent: Agent):
-    if get_agent(agent.id) is not None:
-        raise HTTPException(status_code=400, detail="Agent already exists")
+@fastapi_app.post("/agents/", response_model=AgentResponse)
+def create_agent(agent_request: AgentRequest):
+    if get_agent(agent_request.id) is not None:
+        raise HTTPException(status_code=400, detail="Agent already exists with this ID")
+    
+    # Convert request to Agent model
+    agent = Agent(
+        id=agent_request.id,
+        name=agent_request.name,
+        purpose=agent_request.purpose,
+        model=agent_request.model,
+        configuration=agent_request.configuration
+    )
+    
     insert_agent(agent)
     return agent
 
-@fastapi_app.get("/agents/")
+@fastapi_app.get("/agents/", response_model=list[AgentResponse])
 def get_agents():
     agents = list_agents()
     return agents
 
-@fastapi_app.get("/agents/{agent_id}")
+@fastapi_app.get("/agents/{agent_id}", response_model=AgentResponse)
 def read_agent(agent_id: int):
     agent = get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return agent
 
-@fastapi_app.put("/agents/{agent_id}")
-def modify_agent(agent_id: int, agent: Agent):
+@fastapi_app.put("/agents/{agent_id}", response_model=AgentResponse)
+def modify_agent(agent_id: int, agent_request: AgentRequest):
     existing_agent = get_agent(agent_id)
     if not existing_agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Update agent with request data
+    agent = Agent(
+        id=agent_id,
+        name=agent_request.name,
+        purpose=agent_request.purpose,
+        model=agent_request.model,
+        configuration=agent_request.configuration
+    )
+    
     update_agent(agent)
     return agent
 
@@ -138,9 +121,6 @@ def remove_agent(agent_id: int):
     delete_agent(agent_id)
     return {"detail": "Agent deleted"}
 
-class PromptRequest(BaseModel):
-    prompt: str
-
 @fastapi_app.post("/agents/{agent_id}/generate")
 async def generate_with_agent(agent_id: int, prompt_req: PromptRequest):
     agent = get_agent(agent_id)
@@ -149,25 +129,46 @@ async def generate_with_agent(agent_id: int, prompt_req: PromptRequest):
 
     nebius_api_key = os.getenv("NEBIUS_API_KEY")
     if not nebius_api_key:
-        raise HTTPException(status_code=500, detail="Nebius API key not found")
+        raise HTTPException(status_code=500, detail="Nebius API key not found in environment")
 
-    model_name = agent.model if agent.model else "default"
+    model_name = agent.model if agent.model != "default" else "nebius-text-medium"
+    
+    # Merge agent configuration with request parameters
+    parameters = agent.configuration.copy()
+    if prompt_req.parameters:
+        parameters.update(prompt_req.parameters)
 
-    try:
-        output_text = await call_nebius_model(nebius_api_key, model_name, prompt_req.prompt)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"Nebius API error: {e.response.text}")
-
+    output_text = await call_nebius_model(
+        nebius_api_key, 
+        model_name, 
+        prompt_req.prompt,
+        parameters
+    )
+    
     return {
         "agent_id": agent_id,
+        "agent_name": agent.name,
         "model": model_name,
         "input_prompt": prompt_req.prompt,
         "output": output_text
     }
 
-# Modal app entrypoint without volume (data is ephemeral)
+# Health check endpoint
+@fastapi_app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "version": "1.1.0",
+        "database": "connected"
+    }
+
+# Modal app entrypoint
 @app.function(
-    secrets=[modal.Secret.from_name("nebius-api-key")]
+    secrets=[modal.Secret.from_name("nebius-api-key")],
+    # Add persistent volume for the database
+    volumes={
+        "/root": modal.Volume.persisted("meta-agentic-db-vol")
+    }
 )
 @modal.asgi_app()
 def app_entry():
