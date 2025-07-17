@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Import from database module
 from database import Agent, init_db, insert_agent, get_agent, list_agents, update_agent, delete_agent
@@ -84,7 +84,7 @@ def create_agent(agent_request: AgentRequest):
     insert_agent(agent)
     return agent
 
-@fastapi_app.get("/agents/", response_model=list[AgentResponse])
+@fastapi_app.get("/agents/", response_model=List[AgentResponse])
 def get_agents():
     agents = list_agents()
     return agents
@@ -167,7 +167,7 @@ def health_check():
     secrets=[modal.Secret.from_name("nebius-api-key")],
     # Add persistent volume for the database
     volumes={
-        "/root": modal.Volume.persisted("meta-agentic-db-vol")
+        "/data": modal.Volume.from_name("meta-agentic-db-vol", create_if_missing=True)
     }
 )
 @modal.asgi_app()

@@ -2,9 +2,10 @@ import sqlite3
 from pathlib import Path
 from pydantic import BaseModel
 import os
+import json
 
 # Use environment variable or default path
-DB_FILE = Path(os.getenv("AGENT_DB_FILE", "/root/meta_agentic_agents.db"))
+DB_FILE = Path(os.getenv("AGENT_DB_FILE", "/data/meta_agentic_agents.db"))
 
 class Agent(BaseModel):
     id: int
@@ -31,7 +32,7 @@ def insert_agent(agent: Agent):
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
             "INSERT INTO agents (id, name, purpose, model, configuration) VALUES (?, ?, ?, ?, ?)",
-            (agent.id, agent.name, agent.purpose, agent.model, str(agent.configuration))
+            (agent.id, agent.name, agent.purpose, agent.model, json.dumps(agent.configuration))
         )
         conn.commit()
 
@@ -40,12 +41,11 @@ def get_agent(agent_id: int):
         cur = conn.execute("SELECT id, name, purpose, model, configuration FROM agents WHERE id = ?", (agent_id,))
         row = cur.fetchone()
         if row:
-            import json
             config = {}
             try:
                 if row[4]:
                     config = json.loads(row[4])
-            except:
+            except json.JSONDecodeError:
                 pass
             return Agent(id=row[0], name=row[1], purpose=row[2], model=row[3], configuration=config)
         return None
@@ -54,7 +54,7 @@ def update_agent(agent: Agent):
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
             "UPDATE agents SET name = ?, purpose = ?, model = ?, configuration = ? WHERE id = ?",
-            (agent.name, agent.purpose, agent.model, str(agent.configuration), agent.id)
+            (agent.name, agent.purpose, agent.model, json.dumps(agent.configuration), agent.id)
         )
         conn.commit()
 
@@ -67,13 +67,19 @@ def list_agents():
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.execute("SELECT id, name, purpose, model, configuration FROM agents")
         rows = cur.fetchall()
-        import json
-        return [
-            Agent(
+        agents = []
+        for row in rows:
+            config = {}
+            try:
+                if row[4]:
+                    config = json.loads(row[4])
+            except json.JSONDecodeError:
+                pass
+            agents.append(Agent(
                 id=row[0], 
                 name=row[1], 
                 purpose=row[2], 
                 model=row[3], 
-                configuration=json.loads(row[4]) if row[4] else {}
-            ) for row in rows
-        ]
+                configuration=config
+            ))
+        return agents
